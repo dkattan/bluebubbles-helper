@@ -673,30 +673,42 @@ NSMutableArray* vettedAliases;
         }
 
         NSString *guid = [transfer guid] ?: attachmentGuid;
+        NSString *filename = [transfer filename] ?: [NSString stringWithFormat:@"%@.bin", attachmentGuid];
+        NSString *downloadDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads/BlueBubblesDownloads"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:downloadDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *downloadPath = [downloadDir stringByAppendingPathComponent:filename];
+
         [center registerTransferWithDaemon:guid];
-        [center acceptTransfer:guid];
+        [center acceptTransfer:guid withPath:downloadPath autoRename:YES overwrite:YES];
 
         if (transaction != nil) {
             __block NSInteger attempts = 0;
             __block void (^checkTransferState)(void) = ^{
                 IMFileTransfer *updatedTransfer = [center transferForGUID:guid includeRemoved:YES];
                 NSInteger updatedState = updatedTransfer ? [updatedTransfer transferState] : -1;
-                id updatedPath = nil;
-                if (updatedTransfer && [updatedTransfer respondsToSelector:@selector(path)]) {
-                    updatedPath = [updatedTransfer performSelector:@selector(path)];
+                NSString *updatedPath = nil;
+                NSURL *updatedLocalURL = updatedTransfer ? [updatedTransfer localURL] : nil;
+                if (updatedLocalURL != nil) {
+                    updatedPath = [updatedLocalURL path];
                 }
+                if (updatedPath == nil) {
+                    updatedPath = downloadPath;
+                }
+                BOOL fileExists = updatedPath != nil && [[NSFileManager defaultManager] fileExistsAtPath:updatedPath];
 
-                if (updatedTransfer != nil && updatedState == 5) {
+                if ((updatedTransfer != nil && updatedState == 5) || fileExists) {
                     NSMutableDictionary *response = [@{@"transactionId": transaction, @"transferState": @(updatedState)} mutableCopy];
                     if (updatedPath != nil) {
                         response[@"path"] = updatedPath;
                     }
+                    response[@"fileExists"] = @(fileExists);
                     [[NetworkController sharedInstance] sendMessage: response];
                 } else if (attempts >= 10) {
                     NSMutableDictionary *response = [@{@"transactionId": transaction, @"error": @"Download pending or failed!", @"transferState": @(updatedState)} mutableCopy];
                     if (updatedPath != nil) {
                         response[@"path"] = updatedPath;
                     }
+                    response[@"fileExists"] = @(fileExists);
                     [[NetworkController sharedInstance] sendMessage: response];
                 } else {
                     attempts += 1;
