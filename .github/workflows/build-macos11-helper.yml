@@ -1,0 +1,39 @@
+name: Build macOS11+ BlueBubblesHelper dylib
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/download-purged-attachment
+
+jobs:
+  build:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build helper dylib
+        working-directory: Messages/MacOS-11+
+        run: |
+          xcodebuild \
+            -workspace BlueBubblesHelper.xcworkspace \
+            -scheme "BlueBubblesHelper DyLib" \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Find artifact
+        run: |
+          find ~/Library/Developer/Xcode/DerivedData -name 'BlueBubblesHelper.dylib' -print
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlueBubblesHelper-macos11-dylib
+          path: ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Release/BlueBubblesHelper.dylib
+          if-no-files-found: error

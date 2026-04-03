@@ -646,17 +646,71 @@ NSMutableArray* vettedAliases;
         }];
     // If the server tells us to download a purged attachment
     } else if ([event isEqualToString:@"download-purged-attachment"]) {
-        IMFileTransfer* transfer = [[IMFileTransferCenter sharedInstance] transferForGUID:(data[@"attachmentGuid"])];
-        if ([transfer transferState] != 0 || ![transfer isIncoming]) {
+        NSString *attachmentGuid = data[@"attachmentGuid"];
+        if (attachmentGuid == nil || attachmentGuid == [NSNull null] || attachmentGuid.length == 0) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!"}];
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Provide an attachment GUID!"}];
             }
+            return;
         }
 
-        [[IMFileTransferCenter sharedInstance] registerTransferWithDaemon:([transfer guid])];
-        [[IMFileTransferCenter sharedInstance] acceptTransfer:([transfer guid])];
+        IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
+        IMFileTransfer *transfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
+        if (transfer == nil) {
+            if (transaction != nil) {
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Transfer not found!"}];
+            }
+            return;
+        }
+
+        NSInteger state = [transfer transferState];
+        BOOL incoming = [transfer isIncoming];
+        if (state != 0 || !incoming) {
+            if (transaction != nil) {
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!", @"transferState": @(state), @"incoming": @(incoming)}];
+            }
+            return;
+        }
+
+        NSString *guid = [transfer guid] ?: attachmentGuid;
+        [center registerTransferWithDaemon:guid];
+        [center acceptTransfer:guid];
+
         if (transaction != nil) {
-            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction}];
+            __block NSInteger attempts = 0;
+            __block void (^checkTransferState)(void) = ^{
+                IMFileTransfer *updatedTransfer = [center transferForGUID:guid includeRemoved:YES];
+                NSInteger updatedState = updatedTransfer ? [updatedTransfer transferState] : -1;
+                id updatedPath = nil;
+                if (updatedTransfer && [updatedTransfer respondsToSelector:@selector(path)]) {
+                    updatedPath = [updatedTransfer performSelector:@selector(path)];
+                }
+
+                if (updatedTransfer != nil && updatedState == 5) {
+                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"transferState": @(updatedState)} mutableCopy];
+                    if (updatedPath != nil) {
+                        response[@"path"] = updatedPath;
+                    }
+                    [[NetworkController sharedInstance] sendMessage: response];
+                } else if (attempts >= 10) {
+                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"error": @"Download pending or failed!", @"transferState": @(updatedState)} mutableCopy];
+                    if (updatedPath != nil) {
+                        response[@"path"] = updatedPath;
+                    }
+                    [[NetworkController sharedInstance] sendMessage: response];
+                } else {
+                    attempts += 1;
+                    dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+                    dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+                        checkTransferState();
+                    });
+                }
+            };
+
+            dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+            dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+                checkTransferState();
+            });
         }
     // If the server asks us if the chat can have a nickname shared
     } else if ([event isEqualToString:@"should-offer-nickname-sharing"]) {
