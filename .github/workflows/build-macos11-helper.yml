@@ -20,10 +20,33 @@ jobs:
       - name: Build helper dylib
         working-directory: Messages/MacOS-11+
         run: |
+          mkdir -p build-artifacts
+          xcodebuild \
+            -project Pods/Pods.xcodeproj \
+            -target CocoaAsyncSocket \
+            -configuration Release \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+          xcodebuild \
+            -project Pods/Pods.xcodeproj \
+            -target "Pods-BlueBubblesHelper DyLib" \
+            -configuration Release \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
           xcodebuild \
             -workspace BlueBubblesHelper.xcworkspace \
             -scheme "BlueBubblesHelper DyLib" \
             -configuration Release \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -31,11 +54,14 @@ jobs:
 
       - name: Find artifact
         run: |
-          find ~/Library/Developer/Xcode/DerivedData -name 'BlueBubblesHelper.dylib' -print
+          find Messages/MacOS-11+/build-artifacts -name 'BlueBubblesHelper.dylib' -print || true
+          find ~/Library/Developer/Xcode/DerivedData -name 'BlueBubblesHelper.dylib' -print || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: BlueBubblesHelper-macos11-dylib
-          path: ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Release/BlueBubblesHelper.dylib
+          path: |
+            Messages/MacOS-11+/build-artifacts/BlueBubblesHelper.dylib
+            ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Release/BlueBubblesHelper.dylib
           if-no-files-found: error
