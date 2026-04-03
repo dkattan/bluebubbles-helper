@@ -2,13 +2,10 @@ name: Build macOS11+ BlueBubblesHelper dylib
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - fix/download-purged-attachment
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
