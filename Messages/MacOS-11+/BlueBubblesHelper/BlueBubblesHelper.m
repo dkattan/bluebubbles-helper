@@ -646,7 +646,9 @@ NSMutableArray* vettedAliases;
         }];
     // If the server tells us to download a purged attachment
     } else if ([event isEqualToString:@"download-purged-attachment"]) {
+        NSString *markerPath = [@"/tmp/bluebubbles-helper-download.log" stringByStandardizingPath];
         NSString *attachmentGuid = data[@"attachmentGuid"];
+        [@[[NSString stringWithFormat:@"ENTER %@\n", attachmentGuid ?: @"(nil)"]] componentsJoinedByString:@""] writeToFile:markerPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
         if (attachmentGuid == nil || attachmentGuid == [NSNull null] || attachmentGuid.length == 0) {
             if (transaction != nil) {
                 [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Provide an attachment GUID!"}];
@@ -677,6 +679,7 @@ NSMutableArray* vettedAliases;
         NSString *downloadDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads/BlueBubblesDownloads"];
         [[NSFileManager defaultManager] createDirectoryAtPath:downloadDir withIntermediateDirectories:YES attributes:nil error:nil];
         NSString *downloadPath = [downloadDir stringByAppendingPathComponent:filename];
+        [@[[NSString stringWithFormat:@"GUID=%@ STATE=%lld IN=%d DIR=%@ PATH=%@\n", guid, (long long)state, incoming, downloadDir, downloadPath]] componentsJoinedByString:@""] writeToFile:markerPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
 
         [center registerTransferWithDaemon:guid];
         [center acceptTransfer:guid withPath:downloadPath autoRename:YES overwrite:YES];
