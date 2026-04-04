@@ -669,12 +669,20 @@ NSMutableArray* vettedAliases;
         }
 
         IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
+        NSArray *guidParts = [attachmentGuid componentsSeparatedByString:@"_"];
+        NSString *alternateGuid = [guidParts count] >= 3 ? guidParts[2] : attachmentGuid;
         IMFileTransfer *transfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
+        if (transfer == nil && ![alternateGuid isEqualToString:attachmentGuid]) {
+            transfer = [center transferForGUID:alternateGuid includeRemoved:YES];
+        }
         if (transfer == nil) {
             SEL retrievalSelector = NSSelectorFromString(@"_initiateLocalFileURLRetrievalInDaemonForGUID:options:");
             BOOL retrievalStarted = NO;
             if ([center respondsToSelector:retrievalSelector]) {
                 ((void (*)(id, SEL, id, id))objc_msgSend)(center, retrievalSelector, attachmentGuid, @{});
+                if (![alternateGuid isEqualToString:attachmentGuid]) {
+                    ((void (*)(id, SEL, id, id))objc_msgSend)(center, retrievalSelector, alternateGuid, @{});
+                }
                 retrievalStarted = YES;
             }
 
@@ -701,7 +709,7 @@ NSMutableArray* vettedAliases;
                         NSDictionary *transfers = [center transfers] ?: @{};
                         NSArray *keys = [transfers allKeys] ?: @[];
                         NSArray *sample = [keys count] > 5 ? [keys subarrayWithRange:NSMakeRange(0, 5)] : keys;
-                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted), @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"sampleTransferGUIDs": sample}];
+                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted), @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"containsAlternateGuid": @([keys containsObject:alternateGuid]), @"alternateGuid": alternateGuid, @"sampleTransferGUIDs": sample}];
                     } else {
                         attempts += 1;
                         dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
