@@ -679,7 +679,7 @@ NSMutableArray* vettedAliases;
         BOOL incoming = [transfer isIncoming];
         if (state != 0 || !incoming) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!", @"transferState": @(state), @"incoming": @(incoming), @"debugEntered": @YES}];
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"no-need", @"transferState": @(state), @"incoming": @(incoming), @"debugEntered": @YES}];
             }
             return;
         }
