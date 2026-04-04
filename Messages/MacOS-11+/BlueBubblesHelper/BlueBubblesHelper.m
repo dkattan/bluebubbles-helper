@@ -670,7 +670,9 @@ NSMutableArray* vettedAliases;
         IMFileTransfer *transfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
         if (transfer == nil) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Transfer not found!", @"debugEntered": @YES}];
+                NSArray *ordered = [center orderedTransfersGUIDs] ?: @[];
+                NSArray *sample = [ordered count] > 20 ? [ordered subarrayWithRange:NSMakeRange(0, 20)] : ordered;
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"orderedTransferGUIDs": sample}];
             }
             return;
         }
