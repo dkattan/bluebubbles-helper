@@ -661,7 +661,7 @@ NSMutableArray* vettedAliases;
         [markerText writeToFile:markerPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
         if (attachmentGuid == nil || attachmentGuid == [NSNull null] || attachmentGuid.length == 0) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Provide an attachment GUID!"}];
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Provide an attachment GUID!", @"debugEntered": @YES}];
             }
             return;
         }
@@ -670,7 +670,7 @@ NSMutableArray* vettedAliases;
         IMFileTransfer *transfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
         if (transfer == nil) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Transfer not found!"}];
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Transfer not found!", @"debugEntered": @YES}];
             }
             return;
         }
@@ -679,7 +679,7 @@ NSMutableArray* vettedAliases;
         BOOL incoming = [transfer isIncoming];
         if (state != 0 || !incoming) {
             if (transaction != nil) {
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!", @"transferState": @(state), @"incoming": @(incoming)}];
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!", @"transferState": @(state), @"incoming": @(incoming), @"debugEntered": @YES}];
             }
             return;
         }
@@ -711,14 +711,14 @@ NSMutableArray* vettedAliases;
                 BOOL fileExists = updatedPath != nil && [[NSFileManager defaultManager] fileExistsAtPath:updatedPath];
 
                 if ((updatedTransfer != nil && updatedState == 5) || fileExists) {
-                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"transferState": @(updatedState)} mutableCopy];
+                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"transferState": @(updatedState), @"debugEntered": @YES} mutableCopy];
                     if (updatedPath != nil) {
                         response[@"path"] = updatedPath;
                     }
                     response[@"fileExists"] = @(fileExists);
                     [[NetworkController sharedInstance] sendMessage: response];
                 } else if (attempts >= 10) {
-                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"error": @"Download pending or failed!", @"transferState": @(updatedState)} mutableCopy];
+                    NSMutableDictionary *response = [@{@"transactionId": transaction, @"error": @"Download pending or failed!", @"transferState": @(updatedState), @"debugEntered": @YES} mutableCopy];
                     if (updatedPath != nil) {
                         response[@"path"] = updatedPath;
                     }
