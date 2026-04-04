@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 #import "IMTextMessagePartChatItem.h"
 #import "IMHandle.h"
@@ -670,26 +671,50 @@ NSMutableArray* vettedAliases;
         IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
         IMFileTransfer *transfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
         if (transfer == nil) {
+            SEL retrievalSelector = NSSelectorFromString(@"_initiateLocalFileURLRetrievalInDaemonForGUID:options:");
+            BOOL retrievalStarted = NO;
+            if ([center respondsToSelector:retrievalSelector]) {
+                ((void (*)(id, SEL, id, id))objc_msgSend)(center, retrievalSelector, attachmentGuid, @{});
+                retrievalStarted = YES;
+            }
+
             if (transaction != nil) {
-                NSDictionary *transfers = [center transfers] ?: @{};
-                NSArray *keys = [transfers allKeys] ?: @[];
-                NSArray *sample = [keys count] > 5 ? [keys subarrayWithRange:NSMakeRange(0, 5)] : keys;
-                unsigned int methodCount = 0;
-                Method *methods = class_copyMethodList([center class], &methodCount);
-                NSMutableArray *selectorNames = [NSMutableArray array];
-                for (unsigned int i = 0; i < methodCount; i++) {
-                    SEL sel = method_getName(methods[i]);
-                    NSString *name = NSStringFromSelector(sel);
-                    NSString *lower = [name lowercaseString];
-                    if ([lower containsString:@"transfer"] || [lower containsString:@"guid"] || [lower containsString:@"attachment"]) {
-                        [selectorNames addObject:name];
+                __block NSInteger attempts = 0;
+                __block void (^checkTransferLookup)(void) = ^{
+                    IMFileTransfer *updatedTransfer = [center transferForGUID:attachmentGuid includeRemoved:YES];
+                    NSInteger updatedState = updatedTransfer ? [updatedTransfer transferState] : -1;
+                    NSString *updatedPath = nil;
+                    NSURL *updatedLocalURL = updatedTransfer ? [updatedTransfer localURL] : nil;
+                    if (updatedLocalURL != nil) {
+                        updatedPath = [updatedLocalURL path];
                     }
-                }
-                free(methods);
-                if ([selectorNames count] > 40) {
-                    selectorNames = [[selectorNames subarrayWithRange:NSMakeRange(0, 40)] mutableCopy];
-                }
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"sampleTransferGUIDs": sample, @"centerClass": NSStringFromClass([center class]), @"centerMethods": selectorNames}];
+                    BOOL fileExists = updatedPath != nil && [[NSFileManager defaultManager] fileExistsAtPath:updatedPath];
+
+                    if (updatedTransfer != nil && (fileExists || updatedState == 5)) {
+                        NSMutableDictionary *response = [@{@"transactionId": transaction, @"transferState": @(updatedState), @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted)} mutableCopy];
+                        if (updatedPath != nil) {
+                            response[@"path"] = updatedPath;
+                        }
+                        response[@"fileExists"] = @(fileExists);
+                        [[NetworkController sharedInstance] sendMessage: response];
+                    } else if (attempts >= 10) {
+                        NSDictionary *transfers = [center transfers] ?: @{};
+                        NSArray *keys = [transfers allKeys] ?: @[];
+                        NSArray *sample = [keys count] > 5 ? [keys subarrayWithRange:NSMakeRange(0, 5)] : keys;
+                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted), @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"sampleTransferGUIDs": sample}];
+                    } else {
+                        attempts += 1;
+                        dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+                        dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+                            checkTransferLookup();
+                        });
+                    }
+                };
+
+                dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
+                dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+                    checkTransferLookup();
+                });
             }
             return;
         }
