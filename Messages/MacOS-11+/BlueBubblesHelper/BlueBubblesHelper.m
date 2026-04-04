@@ -171,6 +171,15 @@ NSMutableArray* vettedAliases;
      message = [message substringWithRange:NSMakeRange(0, range.location + 1)];
     }
     DLog("BLUEBUBBLESHELPER: Received raw json: %{public}@", message);
+    NSString *recvMarkerPath = [@"/tmp/bluebubbles-helper-recv.log" stringByStandardizingPath];
+    NSString *recvMarkerText = [NSString stringWithFormat:@"RAW %@\n", message ?: @"(nil)"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:recvMarkerPath]) {
+        [@"" writeToFile:recvMarkerPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    NSFileHandle *recvHandle = [NSFileHandle fileHandleForWritingAtPath:recvMarkerPath];
+    [recvHandle seekToEndOfFile];
+    [recvHandle writeData:[recvMarkerText dataUsingEncoding:NSUTF8StringEncoding]];
+    [recvHandle closeFile];
     NSError *error;
     NSData *jsonData = [message dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *dictionary = [NSJSONSerialization JSONObjectWithData:jsonData options:kNilOptions error:&error];
