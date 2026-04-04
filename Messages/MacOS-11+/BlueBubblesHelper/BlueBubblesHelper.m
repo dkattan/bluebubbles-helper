@@ -10,6 +10,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreSpotlight/CoreSpotlight.h>
+#import <objc/runtime.h>
 
 #import "IMTextMessagePartChatItem.h"
 #import "IMHandle.h"
@@ -673,7 +674,22 @@ NSMutableArray* vettedAliases;
                 NSDictionary *transfers = [center transfers] ?: @{};
                 NSArray *keys = [transfers allKeys] ?: @[];
                 NSArray *sample = [keys count] > 5 ? [keys subarrayWithRange:NSMakeRange(0, 5)] : keys;
-                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"sampleTransferGUIDs": sample}];
+                unsigned int methodCount = 0;
+                Method *methods = class_copyMethodList([center class], &methodCount);
+                NSMutableArray *selectorNames = [NSMutableArray array];
+                for (unsigned int i = 0; i < methodCount; i++) {
+                    SEL sel = method_getName(methods[i]);
+                    NSString *name = NSStringFromSelector(sel);
+                    NSString *lower = [name lowercaseString];
+                    if ([lower containsString:@"transfer"] || [lower containsString:@"guid"] || [lower containsString:@"attachment"]) {
+                        [selectorNames addObject:name];
+                    }
+                }
+                free(methods);
+                if ([selectorNames count] > 40) {
+                    selectorNames = [[selectorNames subarrayWithRange:NSMakeRange(0, 40)] mutableCopy];
+                }
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"sampleTransferGUIDs": sample, @"centerClass": NSStringFromClass([center class]), @"centerMethods": selectorNames}];
             }
             return;
         }
