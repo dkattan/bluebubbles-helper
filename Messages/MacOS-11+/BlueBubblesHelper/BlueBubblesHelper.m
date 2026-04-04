@@ -709,7 +709,25 @@ NSMutableArray* vettedAliases;
                         NSDictionary *transfers = [center transfers] ?: @{};
                         NSArray *keys = [transfers allKeys] ?: @[];
                         NSArray *sample = [keys count] > 5 ? [keys subarrayWithRange:NSMakeRange(0, 5)] : keys;
-                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted), @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"containsAlternateGuid": @([keys containsObject:alternateGuid]), @"alternateGuid": alternateGuid, @"sampleTransferGUIDs": sample}];
+                        int classCount = objc_getClassList(NULL, 0);
+                        Class *classes = NULL;
+                        NSMutableArray *classNames = [NSMutableArray array];
+                        if (classCount > 0) {
+                            classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * classCount);
+                            classCount = objc_getClassList(classes, classCount);
+                            for (int i = 0; i < classCount; i++) {
+                                NSString *name = NSStringFromClass(classes[i]);
+                                NSString *lower = [name lowercaseString];
+                                if ([lower containsString:@"imdpersistence"] || [lower containsString:@"attachment"] || [lower containsString:@"transfer"] || [lower containsString:@"messageitem"]) {
+                                    [classNames addObject:name];
+                                }
+                            }
+                            free(classes);
+                        }
+                        if ([classNames count] > 40) {
+                            classNames = [[classNames subarrayWithRange:NSMakeRange(0, 40)] mutableCopy];
+                        }
+                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"status": @"transfer-not-found", @"debugEntered": @YES, @"retrievalStarted": @(retrievalStarted), @"transferCount": @([keys count]), @"containsGuid": @([keys containsObject:attachmentGuid]), @"containsAlternateGuid": @([keys containsObject:alternateGuid]), @"alternateGuid": alternateGuid, @"sampleTransferGUIDs": sample, @"runtimeClasses": classNames}];
                     } else {
                         attempts += 1;
                         dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC));
