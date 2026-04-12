@@ -646,17 +646,44 @@ NSMutableArray* vettedAliases;
         }];
     // If the server tells us to download a purged attachment
     } else if ([event isEqualToString:@"download-purged-attachment"]) {
-        IMFileTransfer* transfer = [[IMFileTransferCenter sharedInstance] transferForGUID:(data[@"attachmentGuid"])];
-        if ([transfer transferState] != 0 || ![transfer isIncoming]) {
+        IMFileTransferCenter *transferCenter = [IMFileTransferCenter sharedInstance];
+        IMFileTransfer* transfer = [transferCenter transferForGUID:(data[@"attachmentGuid"])];
+        if (transfer == nil) {
+            if (transaction != nil) {
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Attachment transfer not found"}];
+            }
+            return;
+        }
+
+        if (![transfer isIncoming]) {
+            if (transaction != nil) {
+                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Attachment is not incoming"}];
+            }
+            return;
+        }
+
+        if ([transfer transferState] != 0) {
             if (transaction != nil) {
                 [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"No need to unpurge!"}];
             }
+            return;
         }
 
-        [[IMFileTransferCenter sharedInstance] registerTransferWithDaemon:([transfer guid])];
-        [[IMFileTransferCenter sharedInstance] acceptTransfer:([transfer guid])];
+        BOOL startedExplicitDownload = NO;
+        if ([transferCenter respondsToSelector:@selector(retrieveLocalFileURLForFileTransferWithGUID:options:completion:)]) {
+            DLog(@"BLUEBUBBLESHELPER: Starting explicit download for purged attachment %@ via retrieveLocalFileURLForFileTransferWithGUID", [transfer guid]);
+            [transferCenter retrieveLocalFileURLForFileTransferWithGUID:[transfer guid] options:1 completion:nil];
+            startedExplicitDownload = YES;
+        }
+
+        if (!startedExplicitDownload) {
+            DLog(@"BLUEBUBBLESHELPER: Falling back to registerTransferWithDaemon/acceptTransfer for purged attachment %@", [transfer guid]);
+            [transferCenter registerTransferWithDaemon:([transfer guid])];
+            [transferCenter acceptTransfer:([transfer guid])];
+        }
+
         if (transaction != nil) {
-            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction}];
+            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"mode": startedExplicitDownload ? @"explicit-download" : @"accept-transfer"}];
         }
     // If the server asks us if the chat can have a nickname shared
     } else if ([event isEqualToString:@"should-offer-nickname-sharing"]) {

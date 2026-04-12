@@ -84,6 +84,7 @@
 -(void)_fetchHighQualityVariantForTransferGUID:(id)arg1 completion:(/*^block*/id)arg2 ;
 -(void)_daemonRestarted:(id)arg1 ;
 -(void)_initiateHighQualityVariantDownloadWithDaemonForGUID:(id)arg1 ;
+-(void)retrieveLocalFileURLForFileTransferWithGUID:(id)arg1 options:(unsigned long long)arg2 completion:(/*^block*/id)arg3 ;
 -(void)registerTransferWithDaemon:(id)arg1 ;
 -(char)hasPendingFileTransfers;
 -(void)acknowledgePendingTransfer:(id)arg1 ;
