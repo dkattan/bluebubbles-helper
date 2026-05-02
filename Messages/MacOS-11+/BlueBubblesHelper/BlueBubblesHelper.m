@@ -64,6 +64,37 @@
 
 BlueBubblesHelper *plugin;
 NSMutableArray* vettedAliases;
+NSMutableDictionary* trackedAttachmentDownloads;
+
+static id BBHJsonValue(id value) {
+    return value ?: [NSNull null];
+}
+
+static NSString* BBHTransferLocalPath(IMFileTransfer* transfer) {
+    if (transfer == nil) return nil;
+
+    if ([transfer respondsToSelector:@selector(localPath)]) {
+        NSString *localPath = [transfer localPath];
+        if (localPath != nil && [localPath length] > 0) {
+            return localPath;
+        }
+    }
+
+    if ([transfer respondsToSelector:@selector(localURL)]) {
+        NSURL *localURL = [transfer localURL];
+        NSString *localURLPath = [localURL path];
+        if (localURLPath != nil && [localURLPath length] > 0) {
+            return localURLPath;
+        }
+    }
+
+    NSString *filename = [transfer filename];
+    if (filename != nil && [filename length] > 0) {
+        return filename;
+    }
+
+    return nil;
+}
 
 
 @implementation BlueBubblesHelper
@@ -105,6 +136,9 @@ NSMutableArray* vettedAliases;
 + (void)load {
     // Create the singleton
     plugin = [BlueBubblesHelper sharedInstance];
+    if (trackedAttachmentDownloads == nil) {
+        trackedAttachmentDownloads = [[NSMutableDictionary alloc] init];
+    }
 
     // Get OS version for debugging purposes
     NSUInteger major = [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
@@ -142,6 +176,160 @@ NSMutableArray* vettedAliases;
 //         [self handleMessage:controller message:@"{\"action\":\"send-multipart\",\"data\":{\"chatGuid\":\"iMessage;-;tanay@neotia.in\",\"subject\":\"SUBJECT\",\"parts\":[{\"text\":\"PART 1\",\"mention\":\"tanay@neotia.in\",\"range\":[0,4]},{\"text\":\"PART 3\"}],\"effectId\":\"com.apple.MobileSMS.expressivesend.impact\",\"selectedMessageGuid\":null}}"];
 //         [self handleMessage:controller message:@"{\"action\":\"send-attachment\",\"data\":{\"filePath\":\"/Users/tanay/Library/Messages/Attachments/BlueBubbles/1668779053637.jpg\",\"chatGuid\":\"iMessage;-;zshames2@icloud.com\",\"isAudioMessage\":0}}"];
 //    });
+}
+
+-(NSMutableDictionary*) trackedAttachmentDownloadInfoForGuid:(NSString*)guid create:(BOOL)create {
+    if (guid == nil) return nil;
+
+    @synchronized (trackedAttachmentDownloads) {
+        NSMutableDictionary *info = [trackedAttachmentDownloads objectForKey:guid];
+        if (info == nil && create) {
+            info = [[NSMutableDictionary alloc] initWithDictionary:@{@"attachmentGuid": guid}];
+            [trackedAttachmentDownloads setObject:info forKey:guid];
+        }
+        return info;
+    }
+}
+
+-(void) stopTrackingAttachmentDownloadGuid:(NSString*)guid {
+    if (guid == nil) return;
+
+    @synchronized (trackedAttachmentDownloads) {
+        [trackedAttachmentDownloads removeObjectForKey:guid];
+    }
+}
+
+-(NSMutableDictionary*) attachmentDownloadPayloadForTransfer:(IMFileTransfer*)transfer requestId:(NSString*)requestId stage:(NSString*)stage error:(NSString*)error {
+    if (transfer == nil || [transfer guid] == nil) return nil;
+
+    NSString *localPath = BBHTransferLocalPath(transfer);
+    NSMutableDictionary *payload = [[NSMutableDictionary alloc] initWithDictionary:@{
+        @"event": @"attachment-download-progress",
+        @"attachmentGuid": BBHJsonValue([transfer guid]),
+        @"requestId": BBHJsonValue(requestId),
+        @"stage": BBHJsonValue(stage),
+        @"messageGuid": BBHJsonValue([transfer messageGUID]),
+        @"filename": BBHJsonValue([transfer filename]),
+        @"localPath": BBHJsonValue(localPath),
+        @"mimeType": BBHJsonValue([transfer mimeType]),
+        @"transferState": [NSNumber numberWithLongLong:[transfer transferState]],
+        @"currentBytes": [NSNumber numberWithUnsignedLongLong:[transfer currentBytes]],
+        @"totalBytes": [NSNumber numberWithUnsignedLongLong:[transfer totalBytes]],
+        @"averageTransferRate": [NSNumber numberWithUnsignedLongLong:[transfer averageTransferRate]],
+        @"isIncoming": [NSNumber numberWithBool:[transfer isIncoming]],
+    }];
+
+    NSString *transferName = [transfer transferredFilename];
+    if (transferName == nil || [transferName length] == 0) {
+        transferName = [transfer filename];
+    }
+    [payload setObject:BBHJsonValue(transferName) forKey:@"transferName"];
+
+    if (error != nil) {
+        [payload setObject:error forKey:@"error"];
+    }
+
+    if ([transfer totalBytes] > 0) {
+        double progress = (double)[transfer currentBytes] / (double)[transfer totalBytes];
+        [payload setObject:[NSNumber numberWithDouble:progress] forKey:@"progress"];
+    }
+
+    return payload;
+}
+
+-(void) emitTrackedAttachmentDownloadForTransfer:(IMFileTransfer*)transfer stage:(NSString*)stage error:(NSString*)error force:(BOOL)force {
+    NSString *guid = [transfer guid];
+    if (guid == nil) return;
+
+    NSMutableDictionary *info = [self trackedAttachmentDownloadInfoForGuid:guid create:NO];
+    if (info == nil) return;
+
+    unsigned long long currentBytes = [transfer currentBytes];
+    unsigned long long totalBytes = [transfer totalBytes];
+    long long transferState = [transfer transferState];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSNumber *lastSentAt = [info objectForKey:@"lastSentAt"];
+    NSNumber *lastCurrentBytes = [info objectForKey:@"lastCurrentBytes"];
+    NSNumber *lastTotalBytes = [info objectForKey:@"lastTotalBytes"];
+    NSNumber *lastTransferState = [info objectForKey:@"lastTransferState"];
+    NSString *lastStage = [info objectForKey:@"lastStage"];
+
+    if (!force) {
+        BOOL sameProgress = lastCurrentBytes != nil && lastTotalBytes != nil && [lastCurrentBytes unsignedLongLongValue] == currentBytes && [lastTotalBytes unsignedLongLongValue] == totalBytes;
+        BOOL sameState = lastTransferState != nil && [lastTransferState longLongValue] == transferState;
+        BOOL sameStage = ((stage == nil && lastStage == nil) || [lastStage isEqualToString:stage]);
+
+        if (sameProgress && sameState && sameStage) {
+            return;
+        }
+
+        if ([stage isEqualToString:@"progress"] && lastSentAt != nil && (now - [lastSentAt doubleValue]) < 0.25 && sameState) {
+            return;
+        }
+    }
+
+    [info setObject:[NSNumber numberWithDouble:now] forKey:@"lastSentAt"];
+    [info setObject:[NSNumber numberWithUnsignedLongLong:currentBytes] forKey:@"lastCurrentBytes"];
+    [info setObject:[NSNumber numberWithUnsignedLongLong:totalBytes] forKey:@"lastTotalBytes"];
+    [info setObject:[NSNumber numberWithLongLong:transferState] forKey:@"lastTransferState"];
+    if (stage != nil) {
+        [info setObject:stage forKey:@"lastStage"];
+    }
+
+    NSMutableDictionary *payload = [self attachmentDownloadPayloadForTransfer:transfer requestId:[info objectForKey:@"requestId"] stage:stage error:error];
+    NSString *mode = [info objectForKey:@"mode"];
+    if (payload != nil && mode != nil) {
+        [payload setObject:mode forKey:@"mode"];
+    }
+    if (payload != nil) {
+        [[NetworkController sharedInstance] sendMessage:payload];
+    }
+
+    if (error != nil || transferState == 5 || [stage isEqualToString:@"completed"] || [stage isEqualToString:@"failed"]) {
+        [self stopTrackingAttachmentDownloadGuid:guid];
+    }
+}
+
+-(void) emitTrackedAttachmentDownloadFailureForGuid:(NSString*)guid error:(NSString*)error {
+    if (guid == nil) return;
+
+    IMFileTransfer *transfer = [[IMFileTransferCenter sharedInstance] transferForGUID:guid];
+    if (transfer != nil) {
+        [self emitTrackedAttachmentDownloadForTransfer:transfer stage:@"failed" error:error force:YES];
+        return;
+    }
+
+    NSMutableDictionary *info = [self trackedAttachmentDownloadInfoForGuid:guid create:NO];
+    if (info == nil) return;
+
+    NSMutableDictionary *payload = [[NSMutableDictionary alloc] initWithDictionary:@{
+        @"event": @"attachment-download-progress",
+        @"attachmentGuid": BBHJsonValue(guid),
+        @"requestId": BBHJsonValue([info objectForKey:@"requestId"]),
+        @"stage": @"failed",
+        @"error": BBHJsonValue(error),
+    }];
+    NSString *mode = [info objectForKey:@"mode"];
+    if (mode != nil) {
+        [payload setObject:mode forKey:@"mode"];
+    }
+    [[NetworkController sharedInstance] sendMessage:payload];
+    [self stopTrackingAttachmentDownloadGuid:guid];
+}
+
+-(void) trackAttachmentDownload:(IMFileTransfer*)transfer requestId:(NSString*)requestId mode:(NSString*)mode {
+    if (transfer == nil || [transfer guid] == nil) return;
+
+    NSMutableDictionary *info = [self trackedAttachmentDownloadInfoForGuid:[transfer guid] create:YES];
+    if (requestId != nil) {
+        [info setObject:requestId forKey:@"requestId"];
+    }
+    if (mode != nil) {
+        [info setObject:mode forKey:@"mode"];
+    }
+    [info setObject:[NSNumber numberWithDouble:[[NSDate date] timeIntervalSince1970]] forKey:@"startedAt"];
+
+    [self emitTrackedAttachmentDownloadForTransfer:transfer stage:@"started" error:nil force:YES];
 }
 
 -(void) DumpObjcMethods:(Class) clz {
@@ -669,21 +857,21 @@ NSMutableArray* vettedAliases;
             return;
         }
 
-        BOOL startedExplicitDownload = NO;
-        if ([transferCenter respondsToSelector:@selector(retrieveLocalFileURLForFileTransferWithGUID:options:completion:)]) {
-            DLog(@"BLUEBUBBLESHELPER: Starting explicit download for purged attachment %@ via retrieveLocalFileURLForFileTransferWithGUID", [transfer guid]);
-            [transferCenter retrieveLocalFileURLForFileTransferWithGUID:[transfer guid] options:1 completion:nil];
-            startedExplicitDownload = YES;
-        }
+        BOOL canUseExplicitDownload = [transferCenter respondsToSelector:@selector(retrieveLocalFileURLForFileTransferWithGUID:options:completion:)];
+        NSString *downloadMode = canUseExplicitDownload ? @"explicit-download" : @"accept-transfer";
+        [self trackAttachmentDownload:transfer requestId:transaction mode:downloadMode];
 
-        if (!startedExplicitDownload) {
-            DLog(@"BLUEBUBBLESHELPER: Falling back to registerTransferWithDaemon/acceptTransfer for purged attachment %@", [transfer guid]);
+        if (canUseExplicitDownload) {
+            DLog("BLUEBUBBLESHELPER: Starting explicit download for purged attachment %{public}@ via retrieveLocalFileURLForFileTransferWithGUID", [transfer guid]);
+            [transferCenter retrieveLocalFileURLForFileTransferWithGUID:[transfer guid] options:1 completion:nil];
+        } else {
+            DLog("BLUEBUBBLESHELPER: Falling back to registerTransferWithDaemon/acceptTransfer for purged attachment %{public}@", [transfer guid]);
             [transferCenter registerTransferWithDaemon:([transfer guid])];
             [transferCenter acceptTransfer:([transfer guid])];
         }
 
         if (transaction != nil) {
-            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"mode": startedExplicitDownload ? @"explicit-download" : @"accept-transfer"}];
+            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"requestId": transaction, @"mode": downloadMode}];
         }
     // If the server asks us if the chat can have a nickname shared
     } else if ([event isEqualToString:@"should-offer-nickname-sharing"]) {
@@ -1032,8 +1220,10 @@ NSMutableArray* vettedAliases;
         if (reaction == nil) {
             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(transferGUIDs) flags:(isAudioMessage ? 0x300005 : (subject ? 0x10000d : 0x100005)) error:(nil) guid:(nil) subject:(nil) balloonBundleID:(nil) payloadData:(nil) expressiveSendStyleID:(effectId)];
             messageToSend.threadIdentifier = threadIdentifier;
+            DLog("BLUEBUBBLESHELPER: createMessage text-threading threadIdentifier=%{public}@ associatedMessageGuid=%{public}@ transferCount=%ld isAudio=%d", threadIdentifier ?: @"<nil>", associatedMessageGuid ?: @"<nil>", (long)[transferGUIDs count], isAudioMessage);
         } else {
             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(nil) flags:(0x5) error:(nil) guid:(nil) subject:(nil) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) messageSummaryInfo:(summaryInfo)];
+            DLog("BLUEBUBBLESHELPER: createMessage reaction associatedMessageGuid=%{public}@ range={%lu,%lu}", associatedMessageGuid ?: @"<nil>", (unsigned long)range.location, (unsigned long)range.length);
         }
 
         if (ddScan && [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion >= 13) {
@@ -1064,7 +1254,15 @@ NSMutableArray* vettedAliases;
     };
 
     if (data[@"selectedMessageGuid"] != [NSNull null] && [data[@"selectedMessageGuid"] length] != 0) {
+        DLog("BLUEBUBBLESHELPER: send-message requested threaded send chatGuid=%{public}@ selectedMessageGuid=%{public}@ partIndex=%ld", data[@"chatGuid"] ?: @"<nil>", data[@"selectedMessageGuid"] ?: @"<nil>", (long)[data[@"partIndex"] integerValue]);
         [BlueBubblesHelper getMessageItem:(chat) :(data[@"selectedMessageGuid"]) completionBlock:^(IMMessage *message) {
+            if (message == nil) {
+                DLog("BLUEBUBBLESHELPER: send-message failed to resolve selectedMessageGuid=%{public}@", data[@"selectedMessageGuid"] ?: @"<nil>");
+                if (transaction != nil) {
+                    [[NetworkController sharedInstance] sendMessage:@{ @"transactionId": transaction, @"error": [NSString stringWithFormat:@"Reply threading failed: selectedMessageGuid %@ was not found in Messages.", data[@"selectedMessageGuid"] ?: @"<nil>"] }];
+                }
+                return;
+            }
             IMMessageItem *messageItem = (IMMessageItem *)message._imMessageItem;
             NSObject *items = messageItem._newChatItems;
             IMMessagePartChatItem *item;
@@ -1133,17 +1331,33 @@ NSMutableArray* vettedAliases;
                     }
                 }
             } else {
-                NSString *identifier = @"";
+                NSString *identifier = nil;
+                NSString *messageThreadIdentifier = [message threadIdentifier];
+                NSString *itemThreadIdentifier = item != nil ? [item threadIdentifier] : nil;
+                DLog("BLUEBUBBLESHELPER: send-message reply target guid=%{public}@ message.threadIdentifier=%{public}@ item.threadIdentifier=%{public}@ partIndex=%ld", [message guid] ?: @"<nil>", messageThreadIdentifier ?: @"<nil>", itemThreadIdentifier ?: @"<nil>", (long)[data[@"partIndex"] integerValue]);
                 // either reply to an existing thread or create a new thread
-                if (message.threadIdentifier != nil) {
-                    identifier = message.threadIdentifier;
+                if (messageThreadIdentifier != nil && [messageThreadIdentifier length] != 0) {
+                    identifier = messageThreadIdentifier;
+                    DLog("BLUEBUBBLESHELPER: send-message using existing message.threadIdentifier=%{public}@ for selectedMessageGuid=%{public}@", identifier ?: @"<nil>", [message guid] ?: @"<nil>");
+                } else if (itemThreadIdentifier != nil && [itemThreadIdentifier length] != 0) {
+                    identifier = itemThreadIdentifier;
+                    DLog("BLUEBUBBLESHELPER: send-message using existing item.threadIdentifier=%{public}@ for selectedMessageGuid=%{public}@", identifier ?: @"<nil>", [message guid] ?: @"<nil>");
                 } else if (item != nil) {
                     identifier = IMCreateThreadIdentifierForMessagePartChatItem(item);
+                    DLog("BLUEBUBBLESHELPER: send-message created threadIdentifier=%{public}@ from message part for selectedMessageGuid=%{public}@", identifier ?: @"<nil>", [message guid] ?: @"<nil>");
+                }
+                if (identifier == nil || [identifier length] == 0) {
+                    DLog("BLUEBUBBLESHELPER: send-message missing thread metadata for selectedMessageGuid=%{public}@ partIndex=%ld, refusing fallback plain send", [message guid] ?: @"<nil>", (long)[data[@"partIndex"] integerValue]);
+                    if (transaction != nil) {
+                        [[NetworkController sharedInstance] sendMessage:@{ @"transactionId": transaction, @"error": [NSString stringWithFormat:@"Reply threading failed: selectedMessageGuid %@ partIndex %@ did not provide a threadIdentifier.", [message guid] ?: @"<nil>", data[@"partIndex"] ?: @0] }];
+                    }
+                    return;
                 }
                 createMessage(attributedString, subjectAttributedString, effectId, identifier, nil, nil, NSMakeRange(0, 0), nil, transfers, isAudioMessage, ddScan);
             }
         }];
     } else {
+        DLog("BLUEBUBBLESHELPER: send-message without selectedMessageGuid, sending without threadIdentifier");
         createMessage(attributedString, subjectAttributedString, effectId, nil, nil, nil, NSMakeRange(0, 0), nil, transfers, isAudioMessage, ddScan);
     }
 }
@@ -1246,6 +1460,64 @@ NSMutableArray* vettedAliases;
         return [[NSMutableArray alloc] initWithArray:@[]];
     }
     return [[NSMutableArray alloc] initWithArray:@[]];
+}
+
+@end
+
+ZKSwizzleInterface(BBH_IMFileTransferCenter, IMFileTransferCenter, NSObject)
+@implementation BBH_IMFileTransferCenter
+
+- (void)_handleFileTransfer:(id)arg1 updatedWithCurrentBytes:(unsigned long long)arg2 totalBytes:(unsigned long long)arg3 averageTransferRate:(unsigned long long)arg4 {
+    ZKOrig(void, arg1, arg2, arg3, arg4);
+
+    if (![arg1 isKindOfClass:[IMFileTransfer class]]) {
+        return;
+    }
+
+    IMFileTransfer *transfer = arg1;
+    [transfer setCurrentBytes:arg2];
+    [transfer setTotalBytes:arg3];
+    [transfer setAverageTransferRate:arg4];
+    [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadForTransfer:transfer stage:@"progress" error:nil force:NO];
+}
+
+- (void)_handleFileTransfer:(id)arg1 updatedWithProperties:(id)arg2 {
+    ZKOrig(void, arg1, arg2);
+
+    if (![arg1 isKindOfClass:[IMFileTransfer class]]) {
+        return;
+    }
+
+    IMFileTransfer *transfer = arg1;
+    NSString *stage = ([transfer transferState] == 5) ? @"completed" : @"state-changed";
+    BOOL force = ([transfer transferState] == 5);
+    [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadForTransfer:transfer stage:stage error:nil force:force];
+}
+
+- (void)_handleFileTransfer:(id)arg1 highQualityDownloadSucceededWithPath:(id)arg2 {
+    ZKOrig(void, arg1, arg2);
+
+    if ([arg1 isKindOfClass:[IMFileTransfer class]]) {
+        IMFileTransfer *transfer = arg1;
+        [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadForTransfer:transfer stage:@"completed" error:nil force:YES];
+    } else if ([arg1 isKindOfClass:[NSString class]]) {
+        NSString *guid = arg1;
+        IMFileTransfer *transfer = [[IMFileTransferCenter sharedInstance] transferForGUID:guid];
+        if (transfer != nil) {
+            [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadForTransfer:transfer stage:@"completed" error:nil force:YES];
+        }
+    }
+}
+
+- (void)_handleFileTransferHighQualityDownloadFailed:(id)arg1 {
+    ZKOrig(void, arg1);
+
+    if ([arg1 isKindOfClass:[IMFileTransfer class]]) {
+        IMFileTransfer *transfer = arg1;
+        [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadForTransfer:transfer stage:@"failed" error:@"High quality download failed" force:YES];
+    } else if ([arg1 isKindOfClass:[NSString class]]) {
+        [[BlueBubblesHelper sharedInstance] emitTrackedAttachmentDownloadFailureForGuid:arg1 error:@"High quality download failed"];
+    }
 }
 
 @end
